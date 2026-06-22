@@ -1,8 +1,7 @@
 from flask import Flask
 import requests
-import threading
-import time
 from datetime import datetime, timedelta
+import time
 
 
 app = Flask(__name__)
@@ -10,27 +9,32 @@ app = Flask(__name__)
 
 logs=[]
 prices=[]
+last_scan=0
 
 
-# =====================
-# INDICATORS
-# =====================
+
+# ========= EMA =========
 
 def ema(data,p):
 
-    v=data[0]
+    value=data[0]
 
     k=2/(p+1)
 
+
     for x in data[1:]:
 
-        v=x*k+v*(1-k)
-
-    return v
+        value=x*k+value*(1-k)
 
 
+    return value
+
+
+
+# ========= RSI =========
 
 def rsi(data):
+
 
     if len(data)<8:
 
@@ -43,11 +47,14 @@ def rsi(data):
 
     for i in range(1,len(data)):
 
+
         d=data[i]-data[i-1]
+
 
         gains.append(max(d,0))
 
         losses.append(abs(min(d,0)))
+
 
 
     gain=sum(gains[-7:])/7
@@ -55,172 +62,222 @@ def rsi(data):
     loss=sum(losses[-7:])/7
 
 
+
     if loss==0:
 
         return 100
 
 
+
     rs=gain/loss
+
 
     return 100-(100/(1+rs))
 
 
 
-# =====================
-# PRICE
-# =====================
+
+# ========= PRICE =========
 
 def gold_price():
 
+
     data=requests.get(
+
         "https://api.gold-api.com/price/XAU",
+
         timeout=10
+
     ).json()
+
 
 
     return float(data["price"])
 
 
 
-# =====================
-# BOT LOOP
-# =====================
 
-def bot():
 
-    while True:
+# ========= SCANNER =========
 
+def scan():
 
-        try:
 
+    global last_scan
 
-            price=gold_price()
 
 
-            prices.append(price)
+    if time.time()-last_scan < 60:
 
-            prices[:] = prices[-200:]
+        return
 
 
-            if len(prices)<8:
 
+    last_scan=time.time()
 
-                signal="Collecting"
 
-                conf=0
 
-                rr=0
+    price=gold_price()
 
-                sl="-"
 
-                tp="-"
 
+    prices.append(price)
 
 
-            else:
 
+    prices[:] = prices[-100:]
 
-                fast=ema(prices[-5:],3)
 
-                slow=ema(prices[-10:],8)
 
+    if len(prices)<5:
 
-                rr=rsi(prices)
 
 
-                momentum=prices[-1]-prices[-3]
+        signal="Collecting"
 
+        conf=0
 
-                signal="⚪ WAIT"
+        rr=0
 
-                conf=50
+        sl="-"
 
-                sl="-"
+        tp="-"
 
-                tp="-"
 
 
+    else:
 
-                if fast>slow and momentum>0:
 
 
-                    signal="🟢 BUY"
+        fast=ema(prices[-5:],3)
 
-                    conf=85
 
-                    sl=round(price-2,2)
+        slow=ema(
 
-                    tp=round(price+4,2)
+            prices,
 
+            min(8,len(prices))
 
+        )
 
-                elif fast<slow and momentum<0:
 
 
-                    signal="🔴 SELL"
+        rr=rsi(prices)
 
-                    conf=85
 
-                    sl=round(price+2,2)
 
-                    tp=round(price-4,2)
+        momentum=prices[-1]-prices[-3]
 
 
 
+        signal="⚪ WAIT"
 
-            ist=datetime.utcnow()+timedelta(
-                hours=5,
-                minutes=30
-            )
+        conf=50
 
+        sl="-"
 
+        tp="-"
 
-            logs.insert(0,{
 
-            "time":ist.strftime("%H:%M:%S"),
 
-            "signal":signal,
+        if fast>slow and momentum>0:
 
-            "price":round(price,2),
 
-            "confidence":conf,
 
-            "rsi":round(rr,2),
+            signal="🟢 BUY"
 
-            "sl":sl,
+            conf=85
 
-            "tp":tp
 
-            })
+            sl=round(price-2,2)
 
+            tp=round(price+4,2)
 
-            logs[:] = logs[:100]
 
 
-        except Exception as e:
 
-            print(e)
+        elif fast<slow and momentum<0:
 
 
 
-        time.sleep(60)
+            signal="🔴 SELL"
 
+            conf=85
 
 
-threading.Thread(
-    target=bot,
-    daemon=True
-).start()
+            sl=round(price+2,2)
 
+            tp=round(price-4,2)
 
 
-# =====================
-# WEBSITE
-# =====================
+
+
+
+    ist=datetime.utcnow()+timedelta(
+
+        hours=5,
+
+        minutes=30
+
+    )
+
+
+
+    logs.insert(
+
+        0,
+
+        {
+
+
+        "time":ist.strftime("%H:%M:%S"),
+
+        "signal":signal,
+
+        "confidence":conf,
+
+        "price":round(price,2),
+
+        "rsi":round(rr,2),
+
+        "sl":sl,
+
+        "tp":tp
+
+
+        }
+
+    )
+
+
+
+    logs[:] = logs[:100]
+
+
+
+
+
+# ========= WEBSITE =========
 
 @app.route("/")
 
+
 def home():
+
+
+    try:
+
+
+        scan()
+
+
+    except Exception as e:
+
+
+        print(e)
+
+
+
 
     html="""
 
@@ -238,29 +295,45 @@ color:white;
 font-family:Arial;
 }
 
+
 table{
+
 width:100%;
+
 border-collapse:collapse;
+
+font-size:13px;
+
 }
+
 
 td,th{
+
 padding:8px;
-text-align:center;
+
 border-bottom:1px solid #444;
+
+text-align:center;
+
 }
 
+
 th{
+
 background:#333;
+
 }
 
 </style>
 
+
 </head>
+
 
 <body>
 
 
-<h2>⚡ XAU SCALPER LIVE</h2>
+<h2>⚡ XAU SCALPER CLOUD</h2>
 
 
 <table>
@@ -269,19 +342,29 @@ background:#333;
 <tr>
 
 <th>Time</th>
+
 <th>Signal</th>
+
 <th>%</th>
+
 <th>XAU</th>
+
 <th>RSI</th>
+
 <th>SL</th>
+
 <th>TP</th>
 
+
 </tr>
+
 
 """
 
 
+
     for x in logs:
+
 
 
         html+=f"""
@@ -304,7 +387,13 @@ background:#333;
 
 </tr>
 
+
 """
 
 
-    return html+"</table></body></html>"
+
+    html+="</table></body></html>"
+
+
+
+    return html
