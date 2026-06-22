@@ -6,38 +6,36 @@ import time
 
 app = Flask(__name__)
 
-
 logs=[]
 prices=[]
 last_scan=0
 
 
-
-# ========= EMA =========
+# =====================
+# EMA
+# =====================
 
 def ema(data,p):
 
-    value=data[0]
+    v=data[0]
 
     k=2/(p+1)
 
-
     for x in data[1:]:
 
-        value=x*k+value*(1-k)
+        v=x*k+v*(1-k)
+
+    return v
 
 
-    return value
 
-
-
-# ========= RSI =========
+# =====================
+# RSI
+# =====================
 
 def rsi(data):
 
-
-    if len(data)<8:
-
+    if len(data)<15:
         return 50
 
 
@@ -47,26 +45,20 @@ def rsi(data):
 
     for i in range(1,len(data)):
 
-
         d=data[i]-data[i-1]
-
 
         gains.append(max(d,0))
 
         losses.append(abs(min(d,0)))
 
 
+    gain=sum(gains[-14:])/14
 
-    gain=sum(gains[-7:])/7
-
-    loss=sum(losses[-7:])/7
-
+    loss=sum(losses[-14:])/14
 
 
     if loss==0:
-
         return 100
-
 
 
     rs=gain/loss
@@ -76,179 +68,309 @@ def rsi(data):
 
 
 
+# =====================
+# PRICE
+# =====================
 
-# ========= PRICE =========
-
-def gold_price():
-
+def get_price():
 
     data=requests.get(
-
         "https://api.gold-api.com/price/XAU",
-
         timeout=10
-
     ).json()
-
-
 
     return float(data["price"])
 
 
 
 
+# =====================
+# STRATEGY ENGINE
+# =====================
 
-# ========= SCANNER =========
-
-def scan():
-
-
-    global last_scan
+def analyse(price):
 
 
-
-    if time.time()-last_scan < 60:
-
-        return
+    if len(prices)<25:
 
 
-
-    last_scan=time.time()
-
-
-
-    price=gold_price()
+        return (
+            "Collecting",
+            0,
+            0,
+            "-",
+            "-",
+            "Building data"
+        )
 
 
 
-    prices.append(price)
+    e9=ema(prices[-20:],9)
+
+    e21=ema(prices[-40:],21)
+
+
+    rr=rsi(prices)
+
+
+    recent_high=max(prices[-10:])
+
+    recent_low=min(prices[-10:])
+
+
+    movement=recent_high-recent_low
+
+
+    score=0
+
+    reason=[]
 
 
 
-    prices[:] = prices[-100:]
+    # avoid flat market
+
+    if movement<1.5:
 
 
+        return (
 
-    if len(prices)<5:
+        "⚪ WAIT",
 
+        40,
 
+        rr,
 
-        signal="Collecting"
+        "-",
 
-        conf=0
+        "-",
 
-        rr=0
-
-        sl="-"
-
-        tp="-"
-
-
-
-    else:
-
-
-
-        fast=ema(prices[-5:],3)
-
-
-        slow=ema(
-
-            prices,
-
-            min(8,len(prices))
+        "Low movement"
 
         )
 
 
 
-        rr=rsi(prices)
+
+    # BUY checks
+
+
+    if e9>e21:
+
+
+        score+=30
+
+        reason.append("Trend")
+
+
+    if price>recent_high-0.5:
+
+
+        score+=20
+
+        reason.append("Breakout")
+
+
+    if 45<rr<65:
+
+
+        score+=25
+
+        reason.append("RSI")
 
 
 
-        momentum=prices[-1]-prices[-3]
+    if price>prices[-3]:
+
+
+        score+=25
+
+        reason.append("Momentum")
 
 
 
-        signal="⚪ WAIT"
-
-        conf=50
-
-        sl="-"
-
-        tp="-"
+    if score>=75:
 
 
+        if score>=90:
 
-        if fast>slow and momentum>0:
+            signal="🔥 STRONG BUY"
 
 
+        else:
 
             signal="🟢 BUY"
 
-            conf=85
 
 
-            sl=round(price-2,2)
+        return (
 
-            tp=round(price+4,2)
+        signal,
+
+        score,
+
+        rr,
+
+        round(price-2,2),
+
+        round(price+5,2),
+
+        ",".join(reason)
+
+        )
 
 
 
 
-        elif fast<slow and momentum<0:
+    # SELL checks
 
 
+    score=0
+
+    reason=[]
+
+
+    if e9<e21:
+
+
+        score+=30
+
+        reason.append("Trend")
+
+
+
+    if price<recent_low+0.5:
+
+
+        score+=20
+
+        reason.append("Breakdown")
+
+
+
+    if 35<rr<55:
+
+
+        score+=25
+
+        reason.append("RSI")
+
+
+
+    if price<prices[-3]:
+
+
+        score+=25
+
+        reason.append("Momentum")
+
+
+
+    if score>=75:
+
+
+        if score>=90:
+
+            signal="🔥 STRONG SELL"
+
+        else:
 
             signal="🔴 SELL"
 
-            conf=85
 
 
-            sl=round(price+2,2)
+        return (
 
-            tp=round(price-4,2)
+        signal,
+
+        score,
+
+        rr,
+
+        round(price+2,2),
+
+        round(price-5,2),
+
+        ",".join(reason)
+
+        )
 
 
+
+    return (
+
+    "⚪ WAIT",
+
+    50,
+
+    rr,
+
+    "-",
+
+    "-",
+
+    "No setup"
+
+    )
+
+
+
+
+
+# =====================
+# SCAN
+# =====================
+
+def scan():
+
+    global last_scan
+
+
+    if time.time()-last_scan<60:
+
+        return
+
+
+    last_scan=time.time()
+
+
+    price=get_price()
+
+
+    prices.append(price)
+
+
+    prices[:] = prices[-200:]
+
+
+    sig,conf,rr,sl,tp,reason=analyse(price)
 
 
 
     ist=datetime.utcnow()+timedelta(
-
         hours=5,
-
         minutes=30
-
     )
 
 
+    logs.insert(0,{
 
-    logs.insert(
+    "time":ist.strftime("%H:%M:%S"),
 
-        0,
+    "signal":sig,
 
-        {
+    "confidence":conf,
 
+    "price":round(price,2),
 
-        "time":ist.strftime("%H:%M:%S"),
+    "rsi":round(rr,2),
 
-        "signal":signal,
+    "sl":sl,
 
-        "confidence":conf,
+    "tp":tp,
 
-        "price":round(price,2),
+    "reason":reason
 
-        "rsi":round(rr,2),
-
-        "sl":sl,
-
-        "tp":tp
-
-
-        }
-
-    )
-
+    })
 
 
     logs[:] = logs[:100]
@@ -257,26 +379,11 @@ def scan():
 
 
 
-# ========= WEBSITE =========
-
 @app.route("/")
-
 
 def home():
 
-
-    try:
-
-
-        scan()
-
-
-    except Exception as e:
-
-
-        print(e)
-
-
+    scan()
 
 
     html="""
@@ -297,43 +404,32 @@ font-family:Arial;
 
 
 table{
-
 width:100%;
-
 border-collapse:collapse;
-
-font-size:13px;
-
+font-size:12px;
 }
 
 
 td,th{
-
-padding:8px;
-
+padding:7px;
 border-bottom:1px solid #444;
-
 text-align:center;
-
 }
 
 
 th{
-
 background:#333;
-
 }
+
 
 </style>
 
-
 </head>
-
 
 <body>
 
 
-<h2>⚡ XAU SCALPER CLOUD</h2>
+<h2>🥇 XAU PRO SCALPER V3</h2>
 
 
 <table>
@@ -342,29 +438,21 @@ background:#333;
 <tr>
 
 <th>Time</th>
-
 <th>Signal</th>
-
 <th>%</th>
-
 <th>XAU</th>
-
 <th>RSI</th>
-
 <th>SL</th>
-
 <th>TP</th>
+<th>Reason</th>
 
 
 </tr>
 
-
 """
 
 
-
     for x in logs:
-
 
 
         html+=f"""
@@ -385,15 +473,12 @@ background:#333;
 
 <td>{x['tp']}</td>
 
-</tr>
+<td>{x['reason']}</td>
 
+</tr>
 
 """
 
 
 
-    html+="</table></body></html>"
-
-
-
-    return html
+    return html+"</table></body></html>"
