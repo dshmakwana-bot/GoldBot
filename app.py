@@ -2,17 +2,50 @@ from flask import Flask
 import requests
 from datetime import datetime, timedelta
 import time
+import json
+import os
 
 
 app = Flask(__name__)
 
+DATA_FILE="prices.json"
+
 logs=[]
-prices=[]
 last_scan=0
 
 
 # =====================
-# EMA
+# STORAGE
+# =====================
+
+def load_prices():
+
+    if os.path.exists(DATA_FILE):
+
+        try:
+            with open(DATA_FILE,"r") as f:
+                return json.load(f)
+
+        except:
+            return []
+
+    return []
+
+
+
+def save_prices(prices):
+
+    with open(DATA_FILE,"w") as f:
+        json.dump(prices,f)
+
+
+
+prices=load_prices()
+
+
+
+# =====================
+# INDICATORS
 # =====================
 
 def ema(data,p):
@@ -29,13 +62,10 @@ def ema(data,p):
 
 
 
-# =====================
-# RSI
-# =====================
-
 def rsi(data):
 
     if len(data)<15:
+
         return 50
 
 
@@ -58,6 +88,7 @@ def rsi(data):
 
 
     if loss==0:
+
         return 100
 
 
@@ -68,8 +99,9 @@ def rsi(data):
 
 
 
+
 # =====================
-# PRICE
+# GOLD PRICE
 # =====================
 
 def get_price():
@@ -79,13 +111,14 @@ def get_price():
         timeout=10
     ).json()
 
+
     return float(data["price"])
 
 
 
 
 # =====================
-# STRATEGY ENGINE
+# STRATEGY
 # =====================
 
 def analyse(price):
@@ -95,12 +128,19 @@ def analyse(price):
 
 
         return (
-            "Collecting",
-            0,
-            0,
-            "-",
-            "-",
-            "Building data"
+
+        "Collecting",
+
+        len(prices),
+
+        0,
+
+        "-",
+
+        "-",
+
+        "Need 25 points"
+
         )
 
 
@@ -113,21 +153,14 @@ def analyse(price):
     rr=rsi(prices)
 
 
-    recent_high=max(prices[-10:])
+    high=max(prices[-10:])
 
-    recent_low=min(prices[-10:])
-
-
-    movement=recent_high-recent_low
+    low=min(prices[-10:])
 
 
-    score=0
-
-    reason=[]
+    movement=high-low
 
 
-
-    # avoid flat market
 
     if movement<1.5:
 
@@ -144,67 +177,46 @@ def analyse(price):
 
         "-",
 
-        "Low movement"
+        "Low volatility"
 
         )
 
 
 
+    # BUY
 
-    # BUY checks
+    score=0
+
+    reason=[]
 
 
     if e9>e21:
-
 
         score+=30
 
         reason.append("Trend")
 
 
-    if price>recent_high-0.5:
-
-
-        score+=20
-
-        reason.append("Breakout")
-
-
-    if 45<rr<65:
-
-
-        score+=25
-
-        reason.append("RSI")
-
-
-
     if price>prices[-3]:
 
-
-        score+=25
+        score+=30
 
         reason.append("Momentum")
 
 
+    if 45<rr<70:
 
-    if score>=75:
+        score+=30
 
-
-        if score>=90:
-
-            signal="🔥 STRONG BUY"
+        reason.append("RSI")
 
 
-        else:
-
-            signal="🟢 BUY"
-
+    if score>=70:
 
 
         return (
 
-        signal,
+        "🟢 BUY" if score<90 else "🔥 STRONG BUY",
 
         score,
 
@@ -221,8 +233,7 @@ def analyse(price):
 
 
 
-    # SELL checks
-
+    # SELL
 
     score=0
 
@@ -231,56 +242,32 @@ def analyse(price):
 
     if e9<e21:
 
-
         score+=30
 
         reason.append("Trend")
 
 
+    if price<prices[-3]:
 
-    if price<recent_low+0.5:
+        score+=30
 
-
-        score+=20
-
-        reason.append("Breakdown")
+        reason.append("Momentum")
 
 
+    if 30<rr<55:
 
-    if 35<rr<55:
-
-
-        score+=25
+        score+=30
 
         reason.append("RSI")
 
 
 
-    if price<prices[-3]:
-
-
-        score+=25
-
-        reason.append("Momentum")
-
-
-
-    if score>=75:
-
-
-        if score>=90:
-
-            signal="🔥 STRONG SELL"
-
-        else:
-
-            signal="🔴 SELL"
-
+    if score>=70:
 
 
         return (
 
-        signal,
+        "🔴 SELL" if score<90 else "🔥 STRONG SELL",
 
         score,
 
@@ -315,9 +302,8 @@ def analyse(price):
 
 
 
-
 # =====================
-# SCAN
+# SCANNER
 # =====================
 
 def scan():
@@ -333,13 +319,16 @@ def scan():
     last_scan=time.time()
 
 
+
     price=get_price()
 
 
     prices.append(price)
 
-
     prices[:] = prices[-200:]
+
+
+    save_prices(prices)
 
 
     sig,conf,rr,sl,tp,reason=analyse(price)
@@ -350,6 +339,7 @@ def scan():
         hours=5,
         minutes=30
     )
+
 
 
     logs.insert(0,{
@@ -379,11 +369,23 @@ def scan():
 
 
 
+# =====================
+# WEBSITE
+# =====================
+
 @app.route("/")
 
 def home():
 
-    scan()
+
+    try:
+
+        scan()
+
+    except Exception as e:
+
+        print(e)
+
 
 
     html="""
@@ -402,13 +404,11 @@ color:white;
 font-family:Arial;
 }
 
-
 table{
 width:100%;
 border-collapse:collapse;
 font-size:12px;
 }
-
 
 td,th{
 padding:7px;
@@ -416,11 +416,9 @@ border-bottom:1px solid #444;
 text-align:center;
 }
 
-
 th{
 background:#333;
 }
-
 
 </style>
 
@@ -429,11 +427,10 @@ background:#333;
 <body>
 
 
-<h2>🥇 XAU PRO SCALPER V3</h2>
+<h2>🥇 XAU CLOUD V4</h2>
 
 
 <table>
-
 
 <tr>
 
@@ -445,7 +442,6 @@ background:#333;
 <th>SL</th>
 <th>TP</th>
 <th>Reason</th>
-
 
 </tr>
 
@@ -463,7 +459,7 @@ background:#333;
 
 <td>{x['signal']}</td>
 
-<td>{x['confidence']}%</td>
+<td>{x['confidence']}</td>
 
 <td>{x['price']}</td>
 
@@ -478,7 +474,6 @@ background:#333;
 </tr>
 
 """
-
 
 
     return html+"</table></body></html>"
